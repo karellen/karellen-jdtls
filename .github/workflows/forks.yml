@@ -1,0 +1,109 @@
+name: Build Forks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  JDT_CORE_REPO: arcivanov/eclipse.jdt.core
+  JDT_CORE_BRANCH: search-participant-extension-point
+  JDT_UI_REPO: arcivanov/eclipse.jdt.ui
+  JDT_UI_BRANCH: call-hierarchy-search-participants
+  JDTLS_REPO: arcivanov/eclipse.jdt.ls
+  JDTLS_BRANCH: feature/search-participant-extension-point
+
+jobs:
+  build-forks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout karellen-jdtls
+        uses: actions/checkout@v6
+
+      - name: Checkout eclipse.jdt.core fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.JDT_CORE_REPO }}
+          ref: ${{ env.JDT_CORE_BRANCH }}
+          path: upstream/eclipse.jdt.core
+
+      - name: Checkout eclipse.jdt.ui fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.JDT_UI_REPO }}
+          ref: ${{ env.JDT_UI_BRANCH }}
+          path: upstream/eclipse.jdt.ui
+
+      - name: Checkout eclipse.jdt.ls fork
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.JDTLS_REPO }}
+          ref: ${{ env.JDTLS_BRANCH }}
+          path: upstream/eclipse.jdt.ls
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '25'
+          server-id: github
+
+      - name: Cache Maven repository
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-forks-${{ hashFiles('upstream/**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-forks-
+
+      - name: Build JDT Core fork
+        run: mvn -f upstream/eclipse.jdt.core/pom.xml clean install -DskipTests -Dtycho.baseline.skip=true -B -q
+
+      - name: Build JDT Core Manipulation fork
+        run: mvn -f upstream/eclipse.jdt.ui/pom.xml clean install -pl org.eclipse.jdt.core.manipulation -DskipTests -Dtycho.baseline.skip=true -B -q
+
+      - name: Build jdtls fork
+        run: mvn -f upstream/eclipse.jdt.ls/pom.xml clean install -DskipTests -B -q -pl '!org.eclipse.jdt.ls.product'
+
+      - name: Save and publish fork m2 repository
+        run: |
+          set -eEuo pipefail
+          cd ~/.m2/repository
+          DIRS=""
+          for d in org/eclipse/jdt org/eclipse/eclipse-platform-parent eclipse .meta .cache/tycho; do
+            [ -d "$d" ] && DIRS="$DIRS $d"
+          done
+          tar czf "$OLDPWD/m2-forks.tar.gz" $DIRS
+          cd "$OLDPWD"
+
+          # Composite tag from fork versions
+          JDT_CORE_VERSION=$(mvn -f upstream/eclipse.jdt.core/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+          JDTLS_VERSION=$(mvn -f upstream/eclipse.jdt.ls/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+          TAG="forks-jdt-${JDT_CORE_VERSION}-jdtls-${JDTLS_VERSION}"
+
+          gh release create "$TAG" --prerelease \
+            --title "Forks: JDT Core ${JDT_CORE_VERSION}, jdtls ${JDTLS_VERSION}" \
+            --notes "Fork m2 repository snapshot" || true
+          gh release upload "$TAG" m2-forks.tar.gz --clobber
+          echo "Published fork m2 as release $TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy forks to GitHub Packages
+        run: |
+          # Deploy JDT Core fork
+          mvn -f upstream/eclipse.jdt.core/pom.xml deploy -DskipTests -Dtycho.baseline.skip=true -B \
+            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+
+          # Deploy JDT Core Manipulation fork (include parent POM via -am)
+          mvn -f upstream/eclipse.jdt.ui/pom.xml deploy -pl org.eclipse.jdt.core.manipulation -am -DskipTests -Dtycho.baseline.skip=true -B \
+            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+
+          # Deploy jdtls fork
+          mvn -f upstream/eclipse.jdt.ls/pom.xml deploy -DskipTests -B -pl '!org.eclipse.jdt.ls.product' \
+            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
