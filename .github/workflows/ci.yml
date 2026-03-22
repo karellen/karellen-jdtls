@@ -1,0 +1,472 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+  repository_dispatch:
+    types: [kotlin-plugin-release, kotlin-plugin-snapshot]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  packages: write
+
+env:
+  JDTLS_KOTLIN_REPO: karellen/karellen-jdtls-kotlin
+  TYCHO_VERSION: '5.0.2'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.detect-release.outputs.release_version }}
+      wheel_version: ${{ steps.wheel-version.outputs.version }}
+    steps:
+      - name: Checkout karellen-jdtls
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '25'
+          server-id: github
+
+      #- name: Cache Maven repository
+      #  uses: actions/cache@v5
+      #  with:
+      #    path: ~/.m2/repository
+      #    key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/*.target') }}
+      #    restore-keys: |
+      #      ${{ runner.os }}-maven-
+
+      - name: Detect release request
+        id: detect-release
+        if: github.ref == 'refs/heads/master' && !contains(github.event.head_commit.message, '[skip ci]')
+        run: |
+          FIRST_LINE=$(echo "${{ github.event.head_commit.message }}" | head -1)
+          if [[ "$FIRST_LINE" =~ \[release\ +([0-9]+\.[0-9]+\.[0-9]+)\] ]]; then
+            echo "release_version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          elif [[ "$FIRST_LINE" =~ \[release\] ]]; then
+            CURRENT=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+            echo "release_version=${CURRENT%-SNAPSHOT}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine wheel version
+        id: wheel-version
+        run: |
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          if [[ "$POM_VERSION" == *-SNAPSHOT ]]; then
+            BASE="${POM_VERSION%-SNAPSHOT}"
+            TIMESTAMP=$(date -u +%Y%m%d%H%M)
+            echo "version=${BASE}.dev${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${POM_VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download fork m2 repository
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eEuo pipefail
+          # Find the latest forks release
+          FORKS_TAG=$(gh release list --json tagName -q '[.[] | select(.tagName | startswith("forks-"))][0].tagName')
+          echo "Downloading fork m2 from release $FORKS_TAG"
+          gh release download "$FORKS_TAG" -p m2-forks.tar.gz -D .
+          mkdir -p ~/.m2/repository
+          tar xzf m2-forks.tar.gz -C ~/.m2/repository
+          rm m2-forks.tar.gz
+
+      - name: Download kotlin plugin m2 artifacts
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          set -eEuo pipefail
+          KOTLIN_VERSION="${{ github.event.client_payload.version }}"
+          if [ -z "$KOTLIN_VERSION" ]; then
+            # Manual trigger — find latest snapshot release
+            KOTLIN_VERSION=$(gh release list --repo ${{ env.JDTLS_KOTLIN_REPO }} \
+              --json tagName -q '[.[] | select(.tagName | endswith("-SNAPSHOT"))][0].tagName')
+          fi
+          echo "Downloading kotlin plugin m2 for version $KOTLIN_VERSION"
+          gh release download "$KOTLIN_VERSION" --repo ${{ env.JDTLS_KOTLIN_REPO }} \
+            -p m2-kotlin-plugin.tar.gz -D .
+          tar xzf m2-kotlin-plugin.tar.gz -C ~/.m2/repository
+          rm m2-kotlin-plugin.tar.gz
+
+      - name: Configure Maven settings for GitHub Packages
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'SETTINGS'
+          <settings>
+            <servers>
+              <server>
+                <id>github-jdtls</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+              <server>
+                <id>github-kotlin</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+              <server>
+                <id>github</id>
+                <username>${env.GITHUB_ACTOR}</username>
+                <password>${env.GITHUB_TOKEN}</password>
+              </server>
+            </servers>
+            <profiles>
+              <profile>
+                <id>github-packages</id>
+                <repositories>
+                  <repository>
+                    <id>github-jdtls</id>
+                    <url>https://maven.pkg.github.com/karellen/karellen-jdtls</url>
+                    <snapshots><enabled>true</enabled></snapshots>
+                  </repository>
+                  <repository>
+                    <id>github-kotlin</id>
+                    <url>https://maven.pkg.github.com/karellen/karellen-jdtls-kotlin</url>
+                    <snapshots><enabled>true</enabled></snapshots>
+                  </repository>
+                  <repository>
+                    <id>eclipse-hosted</id>
+                    <url>https://repo.eclipse.org/content/repositories/eclipse/</url>
+                    <snapshots><enabled>true</enabled></snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <activeProfiles>
+              <activeProfile>github-packages</activeProfile>
+            </activeProfiles>
+          </settings>
+          SETTINGS
+
+      - name: Build product
+        run: mvn clean install -DskipTests -B -X
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package per-platform archives
+        id: archive
+        run: |
+          VERSION="${{ steps.wheel-version.outputs.version }}"
+          PRODUCTS="co.karellen.jdtls.product/target/products/karellen-jdtls.product"
+          DIST="dist"
+          mkdir -p "$DIST"
+
+          tar czf "$DIST/karellen-jdtls-${VERSION}-linux-gtk-x86_64.tar.gz" \
+            -C "$PRODUCTS/linux/gtk/x86_64" \
+            --exclude=artifacts.xml --exclude=p2 .
+
+          tar czf "$DIST/karellen-jdtls-${VERSION}-linux-gtk-aarch64.tar.gz" \
+            -C "$PRODUCTS/linux/gtk/aarch64" \
+            --exclude=artifacts.xml --exclude=p2 .
+
+          tar czf "$DIST/karellen-jdtls-${VERSION}-macosx-cocoa-x86_64.tar.gz" \
+            -C "$PRODUCTS/macosx/cocoa/x86_64" \
+            --exclude=artifacts.xml --exclude='Eclipse.app/Contents/Eclipse/p2' .
+
+          tar czf "$DIST/karellen-jdtls-${VERSION}-macosx-cocoa-aarch64.tar.gz" \
+            -C "$PRODUCTS/macosx/cocoa/aarch64" \
+            --exclude=artifacts.xml --exclude='Eclipse.app/Contents/Eclipse/p2' .
+
+          (cd "$PRODUCTS/win32/win32/x86_64" && \
+            zip -qr "$OLDPWD/$DIST/karellen-jdtls-${VERSION}-win32-x86_64.zip" \
+            . -x 'artifacts.xml' 'p2/*')
+
+          ls -lh "$DIST/"
+
+      - name: Upload platform archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-archives
+          path: dist/*
+          retention-days: 7
+
+  integration-test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact_suffix: linux-gtk-x86_64.tar.gz
+            extract: tar xzf *.tar.gz
+            launcher: ./jdtls
+            config: ./configuration
+          - runner: ubuntu-24.04-arm
+            artifact_suffix: linux-gtk-aarch64.tar.gz
+            extract: tar xzf *.tar.gz
+            launcher: ./jdtls
+            config: ./configuration
+          - runner: macos-15-intel
+            artifact_suffix: macosx-cocoa-x86_64.tar.gz
+            extract: tar xzf *.tar.gz
+            launcher: ./Eclipse.app/Contents/MacOS/jdtls
+            config: ./Eclipse.app/Contents/Eclipse/configuration
+          - runner: macos-15
+            artifact_suffix: macosx-cocoa-aarch64.tar.gz
+            extract: tar xzf *.tar.gz
+            launcher: ./Eclipse.app/Contents/MacOS/jdtls
+            config: ./Eclipse.app/Contents/Eclipse/configuration
+          - runner: windows-latest
+            artifact_suffix: win32-x86_64.zip
+            extract: unzip -q *.zip
+            launcher: ./jdtls.exe
+            config: ./configuration
+    runs-on: ${{ matrix.runner }}
+    name: integration-test (${{ matrix.artifact_suffix }})
+    steps:
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          name: platform-archives
+          path: archive
+
+      - name: Extract
+        working-directory: archive
+        shell: bash
+        run: |
+          # Find the matching archive
+          ARCHIVE=$(ls *${{ matrix.artifact_suffix }} | head -1)
+          mkdir -p product && cd product
+          if [[ "$ARCHIVE" == *.zip ]]; then
+            unzip -q "../$ARCHIVE"
+          else
+            tar xzf "../$ARCHIVE"
+          fi
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '25'
+
+      - name: Smoke test — LSP initialize
+        working-directory: archive/product
+        shell: bash
+        run: |
+          WORKSPACE=$(mktemp -d)
+
+          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}'
+          EXIT='{"jsonrpc":"2.0","method":"exit"}'
+
+          {
+            printf "Content-Length: ${#INIT}\r\n\r\n%s" "$INIT"
+            printf "Content-Length: ${#EXIT}\r\n\r\n%s" "$EXIT"
+          } > request.bin
+
+          "${{ matrix.launcher }}" \
+            -configuration "${{ matrix.config }}" \
+            -data "$WORKSPACE" \
+            --add-modules=ALL-SYSTEM \
+            --add-opens java.base/java.util=ALL-UNNAMED \
+            --add-opens java.base/java.lang=ALL-UNNAMED \
+            <request.bin >stdout.log 2>stderr.log || true
+
+          echo "=== stderr (last 20 lines) ==="
+          tail -20 stderr.log
+          echo "=== stdout (first 20 lines) ==="
+          head -20 stdout.log
+
+          if grep -q '"jsonrpc"' stdout.log; then
+            echo "LSP initialize response received"
+          else
+            echo "ERROR: No LSP response received"
+            exit 1
+          fi
+
+  package:
+    needs: [build, integration-test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-gtk-x86_64
+            runner: ubuntu-latest
+            container:
+              image: quay.io/pypa/manylinux_2_28_x86_64
+              env:
+                PATH: /opt/python/cp314-cp314/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            archive_suffix: linux-gtk-x86_64.tar.gz
+          - platform: linux-gtk-aarch64
+            runner: ubuntu-24.04-arm
+            container:
+              image: quay.io/pypa/manylinux_2_28_aarch64
+              env:
+                PATH: /opt/python/cp314-cp314/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            archive_suffix: linux-gtk-aarch64.tar.gz
+          - platform: macosx-cocoa-x86_64
+            runner: macos-15-intel
+            container: ''
+            archive_suffix: macosx-cocoa-x86_64.tar.gz
+          - platform: macosx-cocoa-aarch64
+            runner: macos-15
+            container: ''
+            archive_suffix: macosx-cocoa-aarch64.tar.gz
+          - platform: win32-x86_64
+            runner: windows-latest
+            container: ''
+            archive_suffix: win32-x86_64.zip
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container || null }}
+    name: package (${{ matrix.platform }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          name: platform-archives
+          path: archive
+
+      - name: Extract product
+        shell: bash
+        run: |
+          ARCHIVE=$(ls archive/*${{ matrix.archive_suffix }} | head -1)
+          mkdir -p product
+          if [[ "$ARCHIVE" == *.zip ]]; then
+            (cd product && unzip -q "../$ARCHIVE")
+          else
+            tar xzf "$ARCHIVE" -C product
+          fi
+
+      - name: Setup Python (non-container)
+        if: "!matrix.container"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install requirements
+        shell: bash
+        run: |
+          pip install -r requirements.txt
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          python packager.py \
+            -p product \
+            -P ${{ matrix.platform }} \
+            -v ${{ needs.build.outputs.wheel_version }} \
+            -o wheels/
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: wheels/*.whl
+          retention-days: 30
+
+  release:
+    needs: [build, package]
+    if: needs.build.outputs.release_version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '25'
+
+      - name: Set release version, tag, and prepare next development version
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$RELEASE_VERSION"
+          NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-SNAPSHOT"
+
+          mvn org.eclipse.tycho:tycho-versions-plugin:${TYCHO_VERSION}:set-version \
+            -DnewVersion="${RELEASE_VERSION}" -B -q
+          git add -A
+          git commit -m "Release ${RELEASE_VERSION}"
+          git tag "v${RELEASE_VERSION}"
+
+          mvn org.eclipse.tycho:tycho-versions-plugin:${TYCHO_VERSION}:set-version \
+            -DnewVersion="${NEXT_VERSION}" -B -q
+          git add -A
+          git commit -m "Prepare for next development iteration ${NEXT_VERSION} [skip ci]"
+
+          git push --atomic origin master "v${RELEASE_VERSION}"
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          name: platform-archives
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.release_version }}
+          files: |
+            wheels/*.whl
+            dist/*
+          generate_release_notes: true
+
+  publish-pypi:
+    needs: [build, package]
+    if: >-
+      needs.build.result == 'success'
+      && needs.package.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install twine
+        run: pip install twine
+
+      - name: Download all wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload wheels/*.whl
+
+  cleanup:
+    needs: [build, integration-test, package, release, publish-pypi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete platform-archives artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
+            --jq '.artifacts[] | select(.name == "platform-archives") | .id')
+          if [ -n "$ARTIFACT_ID" ]; then
+            gh api -X DELETE repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID
+          fi
