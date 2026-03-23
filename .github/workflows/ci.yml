@@ -39,13 +39,13 @@ jobs:
           java-version: '25'
           server-id: github
 
-      #- name: Cache Maven repository
-      #  uses: actions/cache@v5
-      #  with:
-      #    path: ~/.m2/repository
-      #    key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/*.target') }}
-      #    restore-keys: |
-      #      ${{ runner.os }}-maven-
+      - name: Cache Maven repository
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/*.target') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Detect release request
         id: detect-release
