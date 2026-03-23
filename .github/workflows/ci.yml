@@ -454,7 +454,7 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload wheels/*.whl
+        run: twine upload --skip-existing wheels/*.whl
 
   cleanup:
     needs: [build, integration-test, package, release, publish-pypi]
