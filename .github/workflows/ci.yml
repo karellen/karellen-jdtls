@@ -152,7 +152,7 @@ jobs:
           SETTINGS
 
       - name: Build product
-        run: mvn clean install -DskipTests -B -X
+        run: mvn clean install -DskipTests -B
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
