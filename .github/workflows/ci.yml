@@ -309,10 +309,12 @@ jobs:
           - platform: macosx-cocoa-x86_64
             runner: macos-15-intel
             container: ''
+            plat_name: macosx_11_0_x86_64
             archive_suffix: macosx-cocoa-x86_64.tar.gz
           - platform: macosx-cocoa-aarch64
             runner: macos-15
             container: ''
+            plat_name: macosx_11_0_arm64
             archive_suffix: macosx-cocoa-aarch64.tar.gz
           - platform: win32-x86_64
             runner: windows-latest
@@ -344,7 +346,7 @@ jobs:
 
       - name: Setup Python (non-container)
         if: "!matrix.container"
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
@@ -360,7 +362,8 @@ jobs:
             -p product \
             -P ${{ matrix.platform }} \
             -v ${{ needs.build.outputs.wheel_version }} \
-            -o wheels/
+            -o wheels/ \
+            ${{ matrix.plat_name && format('--plat-name {0}', matrix.plat_name) || '' }}
 
       - name: Upload wheel
         uses: actions/upload-artifact@v7
@@ -436,7 +439,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
