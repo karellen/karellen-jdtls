@@ -39,13 +39,13 @@ jobs:
           java-version: '25'
           server-id: github
 
-      #- name: Cache Maven repository
-      #  uses: actions/cache@v5
-      #  with:
-      #    path: ~/.m2/repository
-      #    key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/*.target') }}
-      #    restore-keys: |
-      #      ${{ runner.os }}-maven-
+      - name: Cache Maven repository
+        uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml', '**/*.target') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
 
       - name: Detect release request
         id: detect-release
@@ -152,7 +152,7 @@ jobs:
           SETTINGS
 
       - name: Build product
-        run: mvn clean install -DskipTests -B -X
+        run: mvn clean install -DskipTests -B
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -255,36 +255,68 @@ jobs:
       - name: Smoke test — LSP initialize
         working-directory: archive/product
         shell: bash
+        timeout-minutes: 2
         run: |
           WORKSPACE=$(mktemp -d)
-
-          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}'
-          EXIT='{"jsonrpc":"2.0","method":"exit"}'
-
-          {
-            printf "Content-Length: ${#INIT}\r\n\r\n%s" "$INIT"
-            printf "Content-Length: ${#EXIT}\r\n\r\n%s" "$EXIT"
-          } > request.bin
-
-          "${{ matrix.launcher }}" \
+          python3 - "${{ matrix.launcher }}" \
             -configuration "${{ matrix.config }}" \
             -data "$WORKSPACE" \
             --add-modules=ALL-SYSTEM \
             --add-opens java.base/java.util=ALL-UNNAMED \
             --add-opens java.base/java.lang=ALL-UNNAMED \
-            <request.bin >stdout.log 2>stderr.log || true
+            << 'PYEOF'
+          import json, subprocess, sys
 
-          echo "=== stderr (last 20 lines) ==="
-          tail -20 stderr.log
-          echo "=== stdout (first 20 lines) ==="
-          head -20 stdout.log
+          def send(proc, msg):
+              data = json.dumps(msg)
+              header = f"Content-Length: {len(data)}\r\n\r\n"
+              proc.stdin.write(header.encode() + data.encode())
+              proc.stdin.flush()
 
-          if grep -q '"jsonrpc"' stdout.log; then
-            echo "LSP initialize response received"
-          else
-            echo "ERROR: No LSP response received"
-            exit 1
-          fi
+          def recv(proc):
+              while True:
+                  line = proc.stdout.readline()
+                  if not line:
+                      return None
+                  line = line.decode()
+                  if line.startswith("Content-Length:"):
+                      length = int(line.split(":")[1].strip())
+                      proc.stdout.readline()  # blank line
+                      body = proc.stdout.read(length).decode()
+                      msg = json.loads(body)
+                      sys.stderr.write(f"<< {json.dumps(msg)}\n")
+                      sys.stderr.flush()
+                      return msg
+
+          def recv_response(proc, req_id):
+              while True:
+                  msg = recv(proc)
+                  if msg is None:
+                      print("ERROR: connection closed", file=sys.stderr)
+                      sys.exit(1)
+                  if "id" in msg and msg["id"] == req_id:
+                      return msg
+
+          proc = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=sys.stderr)
+
+          send(proc, {"jsonrpc":"2.0","id":1,"method":"initialize",
+                       "params":{"processId":None,"rootUri":None,"capabilities":{}}})
+          resp = recv_response(proc, 1)
+          assert "result" in resp, f"initialize failed: {resp}"
+          print("LSP initialize response received", file=sys.stderr)
+
+          send(proc, {"jsonrpc":"2.0","id":2,"method":"shutdown"})
+          recv_response(proc, 2)
+          print("LSP shutdown response received", file=sys.stderr)
+
+          send(proc, {"jsonrpc":"2.0","method":"exit"})
+          try:
+              proc.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.wait()
+          PYEOF
 
   package:
     needs: [build, integration-test]
@@ -309,10 +341,12 @@ jobs:
           - platform: macosx-cocoa-x86_64
             runner: macos-15-intel
             container: ''
+            plat_name: macosx_11_0_x86_64
             archive_suffix: macosx-cocoa-x86_64.tar.gz
           - platform: macosx-cocoa-aarch64
             runner: macos-15
             container: ''
+            plat_name: macosx_11_0_arm64
             archive_suffix: macosx-cocoa-aarch64.tar.gz
           - platform: win32-x86_64
             runner: windows-latest
@@ -344,7 +378,7 @@ jobs:
 
       - name: Setup Python (non-container)
         if: "!matrix.container"
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
@@ -360,7 +394,8 @@ jobs:
             -p product \
             -P ${{ matrix.platform }} \
             -v ${{ needs.build.outputs.wheel_version }} \
-            -o wheels/
+            -o wheels/ \
+            ${{ matrix.plat_name && format('--plat-name {0}', matrix.plat_name) || '' }}
 
       - name: Upload wheel
         uses: actions/upload-artifact@v7
@@ -369,8 +404,92 @@ jobs:
           path: wheels/*.whl
           retention-days: 30
 
-  release:
+  wheel-test:
     needs: [build, package]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-gtk-x86_64
+            runner: ubuntu-latest
+          - platform: linux-gtk-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: macosx-cocoa-x86_64
+            runner: macos-15-intel
+          - platform: macosx-cocoa-aarch64
+            runner: macos-15
+          - platform: win32-x86_64
+            runner: windows-latest
+    runs-on: ${{ matrix.runner }}
+    name: wheel-test (${{ matrix.platform }})
+    steps:
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '25'
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Download wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: wheels
+
+      - name: Install wheel
+        shell: bash
+        run: pip install wheels/*.whl
+
+      - name: Verify jdtls installation
+        shell: bash
+        run: |
+          which jdtls
+          python3 -c "
+          from karellen_jdtls.launcher import _get_data_path
+          import os, sys
+          data = _get_data_path()
+          if sys.platform == 'darwin':
+              binary = os.path.join(data, 'lib', 'karellen-jdtls-kotlin',
+                                   'Eclipse.app', 'Contents', 'MacOS', 'jdtls')
+          elif sys.platform == 'win32':
+              binary = os.path.join(data, 'lib', 'karellen-jdtls-kotlin', 'jdtls.exe')
+          else:
+              binary = os.path.join(data, 'lib', 'karellen-jdtls-kotlin', 'jdtls')
+          print(f'jdtls binary: {binary}')
+          assert os.path.isfile(binary), f'not found: {binary}'
+          print('OK')
+          "
+
+  build-summary:
+    needs: [build, integration-test, package, wheel-test, release, publish-pypi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          echo "build: ${{ needs.build.result }}"
+          echo "integration-test: ${{ needs.integration-test.result }}"
+          echo "package: ${{ needs.package.result }}"
+          echo "wheel-test: ${{ needs.wheel-test.result }}"
+          echo "release: ${{ needs.release.result }}"
+          echo "publish-pypi: ${{ needs.publish-pypi.result }}"
+
+          if [[ "${{ needs.build.result }}" == "failure" ||
+                "${{ needs.integration-test.result }}" == "failure" ||
+                "${{ needs.package.result }}" == "failure" ||
+                "${{ needs.wheel-test.result }}" == "failure" ||
+                "${{ needs.release.result }}" == "failure" ||
+                "${{ needs.publish-pypi.result }}" == "failure" ]]; then
+            echo "One or more jobs failed"
+            exit 1
+          fi
+
+  release:
+    needs: [build, package, wheel-test]
     if: needs.build.outputs.release_version != ''
     runs-on: ubuntu-latest
     steps:
@@ -429,14 +548,17 @@ jobs:
           generate_release_notes: true
 
   publish-pypi:
-    needs: [build, package]
+    needs: [build, package, wheel-test]
     if: >-
       needs.build.result == 'success'
       && needs.package.result == 'success'
+      && needs.wheel-test.result == 'success'
+      && github.event_name == 'push'
+      && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -454,10 +576,10 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: twine upload wheels/*.whl
+        run: twine upload --skip-existing wheels/*.whl
 
   cleanup:
-    needs: [build, integration-test, package, release, publish-pypi]
+    needs: [build, integration-test, package, wheel-test, release, publish-pypi]
     if: always()
     runs-on: ubuntu-latest
     steps:

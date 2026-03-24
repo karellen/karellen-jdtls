@@ -23,12 +23,22 @@ PLATFORMS = {
 
 LAUNCHER_PY = """\
 import os
+import site
+import subprocess
 import sys
 import sysconfig
 
 
+def _get_data_path():
+    user_site = site.getusersitepackages()
+    if __file__.startswith(user_site):
+        scheme = 'nt_user' if os.name == 'nt' else 'posix_user'
+        return sysconfig.get_path('data', scheme)
+    return sysconfig.get_path('data')
+
+
 def main():
-    data = sysconfig.get_path('data')
+    data = _get_data_path()
     if sys.platform == "darwin":
         jdtls = os.path.join(data, "lib", "karellen-jdtls-kotlin",
                              "Eclipse.app", "Contents", "MacOS", "jdtls")
@@ -37,7 +47,13 @@ def main():
     else:
         jdtls = os.path.join(data, "lib", "karellen-jdtls-kotlin", "jdtls")
 
-    os.execv(jdtls, [jdtls] + sys.argv[1:])
+    if sys.platform == "win32":
+        proc = subprocess.Popen([jdtls] + sys.argv[1:],
+                                stdin=sys.stdin, stdout=sys.stdout,
+                                stderr=sys.stderr, close_fds=False)
+        sys.exit(proc.wait())
+    else:
+        os.execv(jdtls, [jdtls] + sys.argv[1:])
 
 
 if __name__ == "__main__":
@@ -150,6 +166,9 @@ parser.add_argument("-v", "--version", type=str, required=True,
                     help="Wheel version (e.g., 1.0.0 or 1.0.0.dev202603221349)")
 parser.add_argument("-o", "--output-dir", type=Path, default=Path("wheels"),
                     help="Output directory for wheels")
+parser.add_argument("--plat-name", type=str, default=None,
+                    help="Override wheel platform tag (e.g., macosx_11_0_arm64). "
+                         "Falls back to AUDITWHEEL_PLAT env var if not set.")
 
 
 PLATFORM_SUBDIRS = {
@@ -205,7 +224,7 @@ def create_python_package(staging_dir: Path):
     (pkg_dir / "launcher.py").write_text(LAUNCHER_PY, encoding="utf-8")
 
 
-def create_build_files(staging_dir: Path, version: str):
+def create_build_files(staging_dir: Path, version: str, plat_name: str | None = None):
     """Generate pyproject.toml, setup.py, and setup.cfg in staging dir."""
     (staging_dir / "pyproject.toml").write_text(PYPROJECT_TOML, encoding="utf-8")
 
@@ -218,7 +237,7 @@ def create_build_files(staging_dir: Path, version: str):
                          "karellen-jdtls-kotlin search participant plugin.",
     )
     (staging_dir / "setup.py").write_text(setup_py, encoding="utf-8")
-    plat = os.environ.get("AUDITWHEEL_PLAT", "")
+    plat = plat_name or os.environ.get("AUDITWHEEL_PLAT", "")
     plat_name_line = f"plat_name = {plat}" if plat else ""
     setup_cfg = SETUP_CFG_TEMPLATE % dict(plat_name_line=plat_name_line)
     (staging_dir / "setup.cfg").write_text(setup_cfg, encoding="utf-8")
@@ -263,7 +282,7 @@ def main():
         create_python_package(staging_dir)
 
         log("Creating build files...")
-        create_build_files(staging_dir, version)
+        create_build_files(staging_dir, version, plat_name=args.plat_name)
 
         log("Building wheel...")
         build_wheel(staging_dir, output_dir)
