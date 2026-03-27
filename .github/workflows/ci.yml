@@ -25,6 +25,7 @@ jobs:
     outputs:
       release_version: ${{ steps.detect-release.outputs.release_version }}
       wheel_version: ${{ steps.wheel-version.outputs.version }}
+      pom_version: ${{ steps.wheel-version.outputs.pom_version }}
     steps:
       - name: Checkout karellen-jdtls
         uses: actions/checkout@v6
@@ -63,6 +64,7 @@ jobs:
         id: wheel-version
         run: |
           POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "pom_version=${POM_VERSION}" >> "$GITHUB_OUTPUT"
           if [[ "$POM_VERSION" == *-SNAPSHOT ]]; then
             BASE="${POM_VERSION%-SNAPSHOT}"
             TIMESTAMP=$(date -u +%Y%m%d%H%M)
@@ -465,7 +467,7 @@ jobs:
           "
 
   build-summary:
-    needs: [build, integration-test, package, wheel-test, release, publish-pypi]
+    needs: [build, integration-test, package, wheel-test, release, publish-pypi, publish-snapshot]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -477,13 +479,15 @@ jobs:
           echo "wheel-test: ${{ needs.wheel-test.result }}"
           echo "release: ${{ needs.release.result }}"
           echo "publish-pypi: ${{ needs.publish-pypi.result }}"
+          echo "publish-snapshot: ${{ needs.publish-snapshot.result }}"
 
           if [[ "${{ needs.build.result }}" == "failure" ||
                 "${{ needs.integration-test.result }}" == "failure" ||
                 "${{ needs.package.result }}" == "failure" ||
                 "${{ needs.wheel-test.result }}" == "failure" ||
                 "${{ needs.release.result }}" == "failure" ||
-                "${{ needs.publish-pypi.result }}" == "failure" ]]; then
+                "${{ needs.publish-pypi.result }}" == "failure" ||
+                "${{ needs.publish-snapshot.result }}" == "failure" ]]; then
             echo "One or more jobs failed"
             exit 1
           fi
@@ -555,7 +559,7 @@ jobs:
       needs.build.result == 'success'
       && needs.package.result == 'success'
       && needs.wheel-test.result == 'success'
-      && github.event_name == 'push'
+      && (github.event_name == 'push' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_dispatch')
       && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
@@ -580,8 +584,43 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: twine upload --skip-existing wheels/*.whl
 
+  publish-snapshot:
+    needs: [build, package, wheel-test]
+    if: >-
+      needs.build.result == 'success'
+      && needs.package.result == 'success'
+      && needs.wheel-test.result == 'success'
+      && needs.build.outputs.release_version == ''
+      && endsWith(needs.build.outputs.pom_version, '-SNAPSHOT')
+      && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Download platform archives
+        uses: actions/download-artifact@v8
+        with:
+          name: platform-archives
+          path: dist
+
+      - name: Publish to snapshot release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.build.outputs.pom_version }}"
+          gh release create "$TAG" --repo ${{ github.repository }} --prerelease \
+            --title "Snapshot: ${TAG}" \
+            --notes "Latest snapshot build artifacts" || true
+          gh release upload "$TAG" --repo ${{ github.repository }} --clobber \
+            wheels/*.whl dist/*
+
   cleanup:
-    needs: [build, integration-test, package, wheel-test, release, publish-pypi]
+    needs: [build, integration-test, package, wheel-test, release, publish-pypi, publish-snapshot]
     if: always()
     runs-on: ubuntu-latest
     steps:
