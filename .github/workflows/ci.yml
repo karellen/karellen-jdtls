@@ -89,6 +89,7 @@ jobs:
           rm m2-forks.tar.gz
 
       - name: Download kotlin plugin m2 artifacts
+        if: github.event.action != 'kotlin-plugin-release'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
