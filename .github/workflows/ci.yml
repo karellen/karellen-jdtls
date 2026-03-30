@@ -89,14 +89,18 @@ jobs:
           rm m2-forks.tar.gz
 
       - name: Download kotlin plugin m2 artifacts
-        if: github.event.action != 'kotlin-plugin-release' && !startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           set -eEuo pipefail
-          KOTLIN_VERSION="${{ github.event.client_payload.version }}"
-          if [ -z "$KOTLIN_VERSION" ]; then
-            # Manual trigger — find latest snapshot release
+          if [ "${{ github.event.action }}" = "kotlin-plugin-release" ] || [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Release build — use latest non-snapshot kotlin release
+            KOTLIN_VERSION=$(gh release list --repo ${{ env.JDTLS_KOTLIN_REPO }} \
+              --json tagName,isPrerelease -q '[.[] | select(.isPrerelease | not)][0].tagName')
+          elif [ -n "${{ github.event.client_payload.version }}" ]; then
+            KOTLIN_VERSION="${{ github.event.client_payload.version }}"
+          else
+            # Manual/push trigger — find latest snapshot release
             KOTLIN_VERSION=$(gh release list --repo ${{ env.JDTLS_KOTLIN_REPO }} \
               --json tagName -q '[.[] | select(.tagName | endswith("-SNAPSHOT"))][0].tagName')
           fi
