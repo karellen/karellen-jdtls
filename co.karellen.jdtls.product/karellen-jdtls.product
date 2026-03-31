@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?pde version="3.5"?>
 
-<product name="Karellen JDTLS" uid="karellen-jdtls.product" id="org.eclipse.jdt.ls.core.product" application="org.eclipse.jdt.ls.core.id1" version="1.0.2" useFeatures="false" includeLaunchers="true" autoIncludeRequirements="true">
+<product name="Karellen JDTLS" uid="karellen-jdtls.product" id="org.eclipse.jdt.ls.core.product" application="org.eclipse.jdt.ls.core.id1" version="1.0.3.qualifier" useFeatures="false" includeLaunchers="true" autoIncludeRequirements="true">
 
    <configIni use="default">
    </configIni>

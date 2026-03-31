@@ -4,7 +4,7 @@
 	<parent>
 		<groupId>co.karellen.jdtls</groupId>
 		<artifactId>parent</artifactId>
-		<version>1.0.2</version>
+		<version>1.0.3-SNAPSHOT</version>
 	</parent>
 	<artifactId>co.karellen.jdtls.product</artifactId>
 	<name>Karellen JDTLS :: Product</name>
