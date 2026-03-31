@@ -4,7 +4,7 @@
 	<parent>
 		<groupId>co.karellen.jdtls</groupId>
 		<artifactId>parent</artifactId>
-		<version>1.0.4</version>
+		<version>1.0.5-SNAPSHOT</version>
 	</parent>
 	<artifactId>co.karellen.jdtls.tp</artifactId>
 	<name>Karellen JDTLS :: Target Platform</name>
