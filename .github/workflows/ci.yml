@@ -89,7 +89,7 @@ jobs:
           rm m2-forks.tar.gz
 
       - name: Download kotlin plugin m2 artifacts
-        if: github.event.action != 'kotlin-plugin-release'
+        if: github.event.action != 'kotlin-plugin-release' && !startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
@@ -470,7 +470,7 @@ jobs:
           "
 
   build-summary:
-    needs: [build, integration-test, package, wheel-test, release, publish-pypi, publish-snapshot]
+    needs: [build, integration-test, package, wheel-test, release, publish-release-assets, publish-pypi, publish-snapshot]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -481,6 +481,7 @@ jobs:
           echo "package: ${{ needs.package.result }}"
           echo "wheel-test: ${{ needs.wheel-test.result }}"
           echo "release: ${{ needs.release.result }}"
+          echo "publish-release-assets: ${{ needs.publish-release-assets.result }}"
           echo "publish-pypi: ${{ needs.publish-pypi.result }}"
           echo "publish-snapshot: ${{ needs.publish-snapshot.result }}"
 
@@ -489,6 +490,7 @@ jobs:
                 "${{ needs.package.result }}" == "failure" ||
                 "${{ needs.wheel-test.result }}" == "failure" ||
                 "${{ needs.release.result }}" == "failure" ||
+                "${{ needs.publish-release-assets.result }}" == "failure" ||
                 "${{ needs.publish-pypi.result }}" == "failure" ||
                 "${{ needs.publish-snapshot.result }}" == "failure" ]]; then
             echo "One or more jobs failed"
@@ -534,6 +536,21 @@ jobs:
 
           git push --atomic origin master "v${RELEASE_VERSION}"
 
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.release_version }}
+          generate_release_notes: true
+
+  publish-release-assets:
+    needs: [build, package, wheel-test]
+    if: >-
+      needs.build.result == 'success'
+      && needs.package.result == 'success'
+      && needs.wheel-test.result == 'success'
+      && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
       - name: Download all wheels
         uses: actions/download-artifact@v8
         with:
@@ -547,14 +564,13 @@ jobs:
           name: platform-archives
           path: dist
 
-      - name: Create GitHub Release
+      - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build.outputs.release_version }}
+          tag_name: ${{ github.ref_name }}
           files: |
             wheels/*.whl
             dist/*
-          generate_release_notes: true
 
   publish-pypi:
     needs: [build, package, wheel-test]
@@ -623,7 +639,7 @@ jobs:
             wheels/*.whl dist/*
 
   cleanup:
-    needs: [build, integration-test, package, wheel-test, release, publish-pypi, publish-snapshot]
+    needs: [build, integration-test, package, wheel-test, release, publish-release-assets, publish-pypi, publish-snapshot]
     if: always()
     runs-on: ubuntu-latest
     steps:
