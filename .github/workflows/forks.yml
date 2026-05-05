@@ -43,11 +43,19 @@ jobs:
           ref: ${{ env.JDTLS_BRANCH }}
           path: upstream/eclipse.jdt.ls
 
+      - name: Checkout eclipse.jdt.javac
+        uses: actions/checkout@v6
+        with:
+          repository: eclipse-jdtls/eclipse.jdt.javac
+          ref: main
+          path: upstream/eclipse.jdt.javac
+
       - name: Set up JDK 25
         uses: actions/setup-java@v5
         with:
           distribution: zulu
           java-version: '25'
+          mvn-toolchain-id: JavaSE-25
           server-id: github
 
       - name: Cache Maven repository
@@ -64,8 +72,18 @@ jobs:
       - name: Build JDT Core Manipulation fork
         run: mvn -f upstream/eclipse.jdt.ui/pom.xml clean install -pl org.eclipse.jdt.core.manipulation -DskipTests -Dtycho.baseline.skip=true -B -q
 
+      - name: Build eclipse.jdt.javac
+        run: |
+          sed -i '/<!-- Forked JDT Core test bundles/,/<\/repository>/d' upstream/eclipse.jdt.javac/pom.xml
+          mvn -f upstream/eclipse.jdt.javac/pom.xml clean verify -DskipTests -B -q \
+            -pl org.eclipse.jdt.core.javac,org.eclipse.jdt.core.javac.configurator,org.eclipse.jdt.javac.ui,org.eclipse.jdt.javac.feature,repository
+
       - name: Build jdtls fork
-        run: mvn -f upstream/eclipse.jdt.ls/pom.xml clean install -DskipTests -B -q -pl '!org.eclipse.jdt.ls.product'
+        run: |
+          JAVAC_REPO="file://${{ github.workspace }}/upstream/eclipse.jdt.javac/repository/target/repository/"
+          sed -i "s|https://ci.eclipse.org/ls/job/eclipse.jdt.javac/job/main/lastSuccessfulBuild/artifact/repository/target/repository/|${JAVAC_REPO}|" \
+            upstream/eclipse.jdt.ls/org.eclipse.jdt.ls.target/org.eclipse.jdt.ls.tp.target
+          mvn -f upstream/eclipse.jdt.ls/pom.xml clean install -DskipTests -B -q -pl '!org.eclipse.jdt.ls.product'
 
       - name: Save and publish fork m2 repository
         run: |
