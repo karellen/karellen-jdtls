@@ -113,15 +113,15 @@ jobs:
         run: |
           # Deploy JDT Core fork
           mvn -f upstream/eclipse.jdt.core/pom.xml deploy -DskipTests -Dtycho.baseline.skip=true -B \
-            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+            -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
 
           # Deploy JDT Core Manipulation fork (include parent POM via -am)
           mvn -f upstream/eclipse.jdt.ui/pom.xml deploy -pl org.eclipse.jdt.core.manipulation -am -DskipTests -Dtycho.baseline.skip=true -B \
-            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+            -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
 
           # Deploy jdtls fork
           mvn -f upstream/eclipse.jdt.ls/pom.xml deploy -DskipTests -B -pl '!org.eclipse.jdt.ls.product' \
-            -DaltDeploymentRepository=github::default::https://maven.pkg.github.com/karellen/karellen-jdtls
+            -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
