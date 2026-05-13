@@ -8,8 +8,6 @@ permissions:
   packages: write
 
 env:
-  JDT_CORE_REPO: arcivanov/eclipse.jdt.core
-  JDT_CORE_BRANCH: search-participant-extension-point
   JDT_UI_REPO: arcivanov/eclipse.jdt.ui
   JDT_UI_BRANCH: call-hierarchy-search-participants
   JDTLS_REPO: arcivanov/eclipse.jdt.ls
@@ -21,13 +19,6 @@ jobs:
     steps:
       - name: Checkout karellen-jdtls
         uses: actions/checkout@v6
-
-      - name: Checkout eclipse.jdt.core fork
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.JDT_CORE_REPO }}
-          ref: ${{ env.JDT_CORE_BRANCH }}
-          path: upstream/eclipse.jdt.core
 
       - name: Checkout eclipse.jdt.ui fork
         uses: actions/checkout@v6
@@ -66,9 +57,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-maven-forks-
 
-      - name: Build JDT Core fork
-        run: mvn -f upstream/eclipse.jdt.core/pom.xml clean install -DskipTests -Dtycho.baseline.skip=true -B -q
-
       - name: Build JDT Core Manipulation fork
         run: mvn -f upstream/eclipse.jdt.ui/pom.xml clean install -pl org.eclipse.jdt.core.manipulation -DskipTests -Dtycho.baseline.skip=true -B -q
 
@@ -97,12 +85,11 @@ jobs:
           cd "$OLDPWD"
 
           # Composite tag from fork versions
-          JDT_CORE_VERSION=$(mvn -f upstream/eclipse.jdt.core/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
           JDTLS_VERSION=$(mvn -f upstream/eclipse.jdt.ls/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
-          TAG="forks-jdt-${JDT_CORE_VERSION}-jdtls-${JDTLS_VERSION}"
+          TAG="forks-jdtls-${JDTLS_VERSION}"
 
           gh release create "$TAG" --prerelease \
-            --title "Forks: JDT Core ${JDT_CORE_VERSION}, jdtls ${JDTLS_VERSION}" \
+            --title "Forks: jdtls ${JDTLS_VERSION}" \
             --notes "Fork m2 repository snapshot" || true
           gh release upload "$TAG" m2-forks.tar.gz --clobber
           echo "Published fork m2 as release $TAG"
@@ -111,10 +98,6 @@ jobs:
 
       - name: Deploy forks to GitHub Packages
         run: |
-          # Deploy JDT Core fork
-          mvn -f upstream/eclipse.jdt.core/pom.xml deploy -DskipTests -Dtycho.baseline.skip=true -B \
-            -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
-
           # Deploy JDT Core Manipulation fork (include parent POM via -am)
           mvn -f upstream/eclipse.jdt.ui/pom.xml deploy -pl org.eclipse.jdt.core.manipulation -am -DskipTests -Dtycho.baseline.skip=true -B \
             -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
