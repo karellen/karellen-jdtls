@@ -8,8 +8,6 @@ permissions:
   packages: write
 
 env:
-  JDT_UI_REPO: arcivanov/eclipse.jdt.ui
-  JDT_UI_BRANCH: call-hierarchy-search-participants
   JDTLS_REPO: arcivanov/eclipse.jdt.ls
   JDTLS_BRANCH: feature/search-participant-extension-point
 
@@ -19,13 +17,6 @@ jobs:
     steps:
       - name: Checkout karellen-jdtls
         uses: actions/checkout@v6
-
-      - name: Checkout eclipse.jdt.ui fork
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.JDT_UI_REPO }}
-          ref: ${{ env.JDT_UI_BRANCH }}
-          path: upstream/eclipse.jdt.ui
 
       - name: Checkout eclipse.jdt.ls fork
         uses: actions/checkout@v6
@@ -56,9 +47,6 @@ jobs:
           key: ${{ runner.os }}-maven-forks-${{ hashFiles('upstream/**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-forks-
-
-      - name: Build JDT Core Manipulation fork
-        run: mvn -f upstream/eclipse.jdt.ui/pom.xml clean install -pl org.eclipse.jdt.core.manipulation -DskipTests -Dtycho.baseline.skip=true -B -q
 
       - name: Build eclipse.jdt.javac
         run: |
@@ -98,11 +86,6 @@ jobs:
 
       - name: Deploy forks to GitHub Packages
         run: |
-          # Deploy JDT Core Manipulation fork (include parent POM via -am)
-          mvn -f upstream/eclipse.jdt.ui/pom.xml deploy -pl org.eclipse.jdt.core.manipulation -am -DskipTests -Dtycho.baseline.skip=true -B \
-            -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
-
-          # Deploy jdtls fork
           mvn -f upstream/eclipse.jdt.ls/pom.xml deploy -DskipTests -B -pl '!org.eclipse.jdt.ls.product' \
             -DaltDeploymentRepository=github::https://maven.pkg.github.com/karellen/karellen-jdtls
         env:
